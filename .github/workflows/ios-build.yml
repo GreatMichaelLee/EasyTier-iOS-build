@@ -16,6 +16,10 @@ on:
       build:
         description: the build number (NNN, allocated by the build box), shown as -Build NNN
         required: true
+      release:
+        description: "true for a release build (no D suffix); anything else is a dev build shown as -Build NNND"
+        required: false
+        default: "false"
 
 permissions:
   contents: read
@@ -52,6 +56,7 @@ jobs:
         env:
           CORE_SSH_KEY: ${{ secrets.CORE_SSH_KEY }}
           BUILD_NUM: ${{ inputs.build }}
+          IS_RELEASE: ${{ inputs.release }}
         run: |
           set +e
           LOG="$RUNNER_TEMP/build.log"
@@ -60,7 +65,8 @@ jobs:
             printf -v BUILD_NUM_PADDED '%03d' "$((10#$BUILD_NUM))"
             DATE=$(git log -1 --format=%cd --date=format:%Y%m%d)
             HASH=$(git rev-parse --short=8 HEAD)
-            BUILD_VERSION="${DATE}-${HASH}-Build ${BUILD_NUM_PADDED}"
+            SUFFIX=D; [ "$IS_RELEASE" = true ] && SUFFIX=
+            BUILD_VERSION="${DATE}-${HASH}-Build ${BUILD_NUM_PADDED}${SUFFIX}"
             FILE_VERSION="${BUILD_VERSION// /}"
             IPA_NAME="easytier-iphone-${FILE_VERSION}.ipa"
             echo "version: ${BUILD_VERSION}"
@@ -115,4 +121,110 @@ jobs:
         with:
           name: easytier-ios-encrypted
           path: ${{ runner.temp }}/out/
+          retention-days: 3
+
+  tests:
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - name: Check out the source (private)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Unit tests (XCTest, hosted by the app on an iPhone simulator) and a UI smoke
+      # (launch the app on each tab in light and dark mode and screenshot it). Same
+      # rule as the build job: everything readable goes to files, the public log
+      # shows counts and "ok"/"failed" only.
+      - name: Test
+        env:
+          CORE_SSH_KEY: ${{ secrets.CORE_SSH_KEY }}
+        run: |
+          set +e
+          OUTDIR="$RUNNER_TEMP/tests-out"; mkdir -p "$OUTDIR/shots"
+          LOG="$OUTDIR/tests.log"
+          (
+            set -uo pipefail
+            mkdir -p ~/.ssh
+            install -m 600 /dev/null ~/.ssh/core_ci_key
+            printf '%s\n' "$CORE_SSH_KEY" > ~/.ssh/core_ci_key
+            ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+            printf 'Host github.com-easytier-core\n  HostName github.com\n  User git\n  IdentityFile ~/.ssh/core_ci_key\n  IdentitiesOnly yes\n' >> ~/.ssh/config
+            git config --global url."git@github.com-easytier-core:${CORE_REPO}.git".insteadOf "https://github.com/${CORE_REPO}.git"
+            export CARGO_NET_GIT_FETCH_WITH_CLI=true
+
+            sudo xcode-select --switch /Applications/Xcode_26.6.app/Contents/Developer
+            rustup target add aarch64-apple-ios-sim
+            command -v protoc >/dev/null 2>&1 || brew install protobuf
+
+            UDID=$(xcrun simctl list devices available -j | python3 -c "
+          import json,sys
+          d=json.load(sys.stdin)['devices']
+          c=[x for k,v in d.items() if 'iOS' in k for x in v if x['name'].startswith('iPhone') and x['isAvailable']]
+          print(c[-1]['udid'] if c else '')")
+            echo "simulator: $UDID"
+            [ -n "$UDID" ] || { echo "no iPhone simulator"; exit 3; }
+            xcrun simctl boot "$UDID" || true
+
+            DD="$RUNNER_TEMP/dd"
+            xcodebuild test -project EasyTier.xcodeproj -scheme "$SCHEME" \
+              -destination "id=$UDID" -derivedDataPath "$DD" \
+              -resultBundlePath "$OUTDIR/tests.xcresult" \
+              CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+              DEVELOPMENT_TEAM="$TEAM_ID"
+            echo "xcodebuild test rc=$?"
+            xcrun xcresulttool get test-results summary --path "$OUTDIR/tests.xcresult" > "$OUTDIR/summary.json" 2>&1
+            xcrun xcresulttool get test-results tests --path "$OUTDIR/tests.xcresult" > "$OUTDIR/tests.json" 2>&1
+
+            APP="$DD/Build/Products/Debug-iphonesimulator/EasyTier.app"
+            if [ -d "$APP" ]; then
+              xcrun simctl install "$UDID" "$APP"
+              BID=app.turquoise1634.pearl6659
+              for mode in light dark; do
+                xcrun simctl ui "$UDID" appearance "$mode"
+                for tab in 0 1 2 3; do
+                  xcrun simctl launch --terminate-running-process "$UDID" "$BID" -uitest-tab "$tab"
+                  sleep 5
+                  xcrun simctl io "$UDID" screenshot "$OUTDIR/shots/tab$tab-$mode.png"
+                done
+              done
+              xcrun simctl terminate "$UDID" "$BID" || true
+            else
+              echo "no simulator app at $APP"
+            fi
+          ) > "$LOG" 2>&1
+          python3 - "$OUTDIR/summary.json" > "$OUTDIR/counts.txt" 2>&1 <<'PY'
+          import json,sys
+          try:
+              d=json.load(open(sys.argv[1]))
+              print("passed=%s failed=%s skipped=%s total=%s" % (d.get("passedTests"),d.get("failedTests"),d.get("skippedTests"),d.get("totalTestCount")))
+          except Exception as e:
+              print("passed=? failed=? (%s)" % e)
+          PY
+          cat "$OUTDIR/counts.txt"
+          grep -q 'xcodebuild test rc=0' "$LOG" && echo "tests ok" || echo "tests failed (see the encrypted log)"
+          ls "$OUTDIR/shots" | wc -l | sed 's/^ *//; s/$/ screenshots/'
+
+      - name: Encrypt
+        if: always()
+        env:
+          ARTIFACT_KEY: ${{ secrets.ARTIFACT_KEY }}
+        run: |
+          OPENSSL="$(brew --prefix openssl@3)/bin/openssl"
+          OUTDIR="$RUNNER_TEMP/tests-out"
+          mkdir -p "$RUNNER_TEMP/tout"
+          (cd "$OUTDIR" && tar czf "$RUNNER_TEMP/ios-tests.tgz" tests.log summary.json tests.json counts.txt shots 2>/dev/null)
+          "$OPENSSL" enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:ARTIFACT_KEY \
+            -in "$RUNNER_TEMP/ios-tests.tgz" -out "$RUNNER_TEMP/tout/ios-tests.tgz.enc"
+          ls "$RUNNER_TEMP/tout" | sed 's/.*/artifact: &/'
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: easytier-ios-tests-encrypted
+          path: ${{ runner.temp }}/tout/
           retention-days: 3
