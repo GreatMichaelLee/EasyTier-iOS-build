@@ -1,0 +1,118 @@
+# The only workflow of the public GreatMichaelLee/EasyTier-iOS-build repository
+# (a public repository builds on GitHub's macOS runners for free). Same model as
+# HomeLink's iOS build: the source stays private -- it is checked out from the
+# private source repository with a read-only deploy key -- and nothing readable
+# leaves the runner: the build log and the IPA are uploaded encrypted with
+# ARTIFACT_KEY (scripts/release/ios-build.sh on the build box decrypts them).
+# Started only by hand (workflow_dispatch needs write access to this repository).
+name: EasyTier iOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: commit of the private source repository to build
+        required: true
+      build:
+        description: the build number (NNN, allocated by the build box), shown as -Build NNN
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios
+  cancel-in-progress: false
+
+env:
+  SOURCE_REPO: GreatMichaelLee/Easytier-iOS-src
+  CORE_REPO: GreatMichaelLee/Easytier
+  SCHEME: EasyTier
+  BUILD_CONFIGURATION: Release
+  TEAM_ID: Z78N6GQ84P
+
+jobs:
+  ipa:
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - name: Check out the source (private)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Everything below that can quote source lines or paths (compiler and
+      # cargo messages) writes to the log file only; the public step log shows
+      # nothing but "ok"/"failed".
+      - name: Build
+        env:
+          CORE_SSH_KEY: ${{ secrets.CORE_SSH_KEY }}
+          BUILD_NUM: ${{ inputs.build }}
+        run: |
+          set +e
+          LOG="$RUNNER_TEMP/build.log"
+          (
+            set -euo pipefail
+            printf -v BUILD_NUM_PADDED '%03d' "$((10#$BUILD_NUM))"
+            DATE=$(git log -1 --format=%cd --date=format:%Y%m%d)
+            HASH=$(git rev-parse --short=8 HEAD)
+            BUILD_VERSION="${DATE}-${HASH}-Build ${BUILD_NUM_PADDED}"
+            FILE_VERSION="${BUILD_VERSION// /}"
+            IPA_NAME="easytier-iphone-${FILE_VERSION}.ipa"
+            echo "version: ${BUILD_VERSION}"
+
+            # cargo pulls the private core repository over a second read-only deploy key
+            mkdir -p ~/.ssh
+            install -m 600 /dev/null ~/.ssh/core_ci_key
+            printf '%s\n' "$CORE_SSH_KEY" > ~/.ssh/core_ci_key
+            ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+            printf 'Host github.com-easytier-core\n  HostName github.com\n  User git\n  IdentityFile ~/.ssh/core_ci_key\n  IdentitiesOnly yes\n' >> ~/.ssh/config
+            git config --global url."git@github.com-easytier-core:${CORE_REPO}.git".insteadOf "https://github.com/${CORE_REPO}.git"
+            export CARGO_NET_GIT_FETCH_WITH_CLI=true
+
+            sudo xcode-select --switch /Applications/Xcode_26.6.app/Contents/Developer
+            xcodebuild -version
+            rustup target add aarch64-apple-ios
+            command -v protoc >/dev/null 2>&1 || brew install protobuf
+
+            ARCHIVE_PATH="$RUNNER_TEMP/EasyTier.xcarchive"
+            xcodebuild archive \
+              -project EasyTier.xcodeproj -scheme "$SCHEME" -configuration "$BUILD_CONFIGURATION" \
+              -destination "generic/platform=iOS" -archivePath "$ARCHIVE_PATH" \
+              CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO AD_HOC_CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM="$TEAM_ID" CURRENT_PROJECT_VERSION="$BUILD_VERSION"
+
+            PKG="$RUNNER_TEMP/package"; OUT="$RUNNER_TEMP/export"
+            mkdir -p "$PKG/Payload" "$OUT"
+            cp -R "$ARCHIVE_PATH/Products/Applications/EasyTier.app" "$PKG/Payload/EasyTier.app"
+            (cd "$PKG" && /usr/bin/zip -qry "$OUT/$IPA_NAME" Payload)
+            (cd "$OUT" && shasum -a 256 "$IPA_NAME" > "$IPA_NAME.sha256")
+          ) > "$LOG" 2>&1
+          echo "rc=$?" >> "$LOG"
+          grep -q '^rc=0$' "$LOG" && echo "build ok" || echo "build failed (see the encrypted log)"
+
+      - name: Encrypt
+        if: always()
+        env:
+          ARTIFACT_KEY: ${{ secrets.ARTIFACT_KEY }}
+        run: |
+          OPENSSL="$(brew --prefix openssl@3)/bin/openssl"
+          mkdir -p "$RUNNER_TEMP/out"
+          enc() { "$OPENSSL" enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:ARTIFACT_KEY -in "$1" -out "$RUNNER_TEMP/out/$(basename "$1").enc"; }
+          [ -f "$RUNNER_TEMP/build.log" ] && enc "$RUNNER_TEMP/build.log"
+          for f in "$RUNNER_TEMP"/export/*.ipa "$RUNNER_TEMP"/export/*.sha256; do [ -f "$f" ] && enc "$f"; done
+          # names only: the public log must not show anything else
+          ls "$RUNNER_TEMP/out" | sed 's/.*/artifact: &/' | sed -E 's/easytier-iphone-[^.]*/easytier-iphone-<version>/'
+          # the job fails when there is no IPA, after the log is safely encrypted
+          ls "$RUNNER_TEMP"/export/*.ipa >/dev/null 2>&1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: easytier-ios-encrypted
+          path: ${{ runner.temp }}/out/
+          retention-days: 3
