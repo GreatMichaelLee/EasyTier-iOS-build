@@ -170,6 +170,8 @@ jobs:
             [ -n "$UDID" ] || { echo "no iPhone simulator"; exit 3; }
             xcrun simctl boot "$UDID" || true
 
+            # bindgen (kcp-sys) cannot parse the Rust triple "aarch64-apple-ios-sim"; hand clang the real one
+            export BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios_sim="--target=arm64-apple-ios16.0-simulator --sysroot=$(xcrun --sdk iphonesimulator --show-sdk-path)"
             DD="$RUNNER_TEMP/dd"
             xcodebuild test -project EasyTier.xcodeproj -scheme "$SCHEME" \
               -destination "id=$UDID" -derivedDataPath "$DD" \
