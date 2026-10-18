@@ -175,22 +175,26 @@ jobs:
             # bindgen (kcp-sys) cannot parse the Rust triple "aarch64-apple-ios-sim"; hand clang the real one
             export BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios_sim="--target=arm64-apple-ios16.0-simulator --sysroot=$(xcrun --sdk iphonesimulator --show-sdk-path)"
             DD="$RUNNER_TEMP/dd"
+            set +e
             xcodebuild test -project EasyTier.xcodeproj -scheme "$SCHEME" \
               -destination "id=$UDID" -derivedDataPath "$DD" \
               -resultBundlePath "$OUTDIR/tests.xcresult" \
               CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
               DEVELOPMENT_TEAM="$TEAM_ID"
-            echo "xcodebuild test rc=$?"
+            XCODE_TEST_RC=$?
+            set -e
+            echo "xcodebuild test rc=$XCODE_TEST_RC"
             xcrun xcresulttool get test-results summary --path "$OUTDIR/tests.xcresult" > "$OUTDIR/summary.json" 2>&1
             xcrun xcresulttool get test-results tests --path "$OUTDIR/tests.xcresult" > "$OUTDIR/tests.json" 2>&1
 
+            [ "$XCODE_TEST_RC" -eq 0 ] || exit "$XCODE_TEST_RC"
             APP="$DD/Build/Products/Debug-iphonesimulator/EasyTier.app"
             if [ -d "$APP" ]; then
               xcrun simctl install "$UDID" "$APP"
               BID=app.turquoise1634.pearl6659
               for mode in light dark; do
                 xcrun simctl ui "$UDID" appearance "$mode"
-                for tab in 0 1 2; do
+                for tab in 0 1 2 3; do
                   xcrun simctl launch --terminate-running-process "$UDID" "$BID" -uitest-tab "$tab"
                   sleep 5
                   xcrun simctl io "$UDID" screenshot "$OUTDIR/shots/tab$tab-$mode.png"
