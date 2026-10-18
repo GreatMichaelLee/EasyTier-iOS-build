@@ -1,0 +1,35 @@
+name: Inspect encrypted iOS test result
+on:
+  workflow_dispatch:
+    inputs:
+      run:
+        description: Test workflow run ID
+        required: true
+permissions:
+  actions: read
+jobs:
+  inspect:
+    runs-on: macos-26
+    steps:
+      - name: Export private diagnostics
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_KEY: ${{ secrets.ARTIFACT_KEY }}
+          SOURCE_RUN: ${{ inputs.run }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" -n easytier-ios-tests-encrypted -D encrypted > download.log 2>&1
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:ARTIFACT_KEY -in encrypted/ios-tests.tgz.enc -out tests.tgz
+          mkdir tests diagnostics
+          tar xzf tests.tgz -C tests
+          xcrun xcresulttool export diagnostics --path tests/tests.xcresult --output-path diagnostics > export.log 2>&1 || true
+          cp export.log diagnostics/
+          tar czf diagnostics.tgz -C diagnostics .
+          mkdir out
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:ARTIFACT_KEY -in diagnostics.tgz -out out/diagnostics.tgz.enc
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-private-diagnostics
+          path: ${{ runner.temp }}/out/
+          retention-days: 3
