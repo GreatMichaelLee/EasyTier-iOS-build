@@ -98,8 +98,10 @@ jobs:
             (cd "$PKG" && /usr/bin/zip -qry "$OUT/$IPA_NAME" Payload)
             (cd "$OUT" && shasum -a 256 "$IPA_NAME" > "$IPA_NAME.sha256")
           ) > "$LOG" 2>&1
-          echo "rc=$?" >> "$LOG"
+          BUILD_RC=$?
+          echo "rc=$BUILD_RC" >> "$LOG"
           grep -q '^rc=0$' "$LOG" && echo "build ok" || echo "build failed (see the encrypted log)"
+          exit "$BUILD_RC"
 
       - name: Encrypt
         if: always()
@@ -148,7 +150,7 @@ jobs:
           OUTDIR="$RUNNER_TEMP/tests-out"; mkdir -p "$OUTDIR/shots"
           LOG="$OUTDIR/tests.log"
           (
-            set -uo pipefail
+            set -euo pipefail
             mkdir -p ~/.ssh
             install -m 600 /dev/null ~/.ssh/core_ci_key
             printf '%s\n' "$CORE_SSH_KEY" > ~/.ssh/core_ci_key
@@ -188,7 +190,7 @@ jobs:
               BID=app.turquoise1634.pearl6659
               for mode in light dark; do
                 xcrun simctl ui "$UDID" appearance "$mode"
-                for tab in 0 1 2 3; do
+                for tab in 0 1 2; do
                   xcrun simctl launch --terminate-running-process "$UDID" "$BID" -uitest-tab "$tab"
                   sleep 5
                   xcrun simctl io "$UDID" screenshot "$OUTDIR/shots/tab$tab-$mode.png"
@@ -197,8 +199,11 @@ jobs:
               xcrun simctl terminate "$UDID" "$BID" || true
             else
               echo "no simulator app at $APP"
+              exit 4
             fi
           ) > "$LOG" 2>&1
+          TEST_RC=$?
+          echo "test pipeline rc=$TEST_RC" >> "$LOG"
           python3 - "$OUTDIR/summary.json" > "$OUTDIR/counts.txt" 2>&1 <<'PY'
           import json,sys
           try:
@@ -210,6 +215,16 @@ jobs:
           cat "$OUTDIR/counts.txt"
           grep -q 'xcodebuild test rc=0' "$LOG" && echo "tests ok" || echo "tests failed (see the encrypted log)"
           ls "$OUTDIR/shots" | wc -l | sed 's/^ *//; s/$/ screenshots/'
+          [ "$TEST_RC" -eq 0 ] || exit "$TEST_RC"
+          python3 - "$OUTDIR/summary.json" <<'PY'
+          import json, sys
+          with open(sys.argv[1]) as f:
+              d = json.load(f)
+          assert d.get("totalTestCount", 0) > 0, "No tests executed"
+          assert d.get("passedTests", 0) > 0, "No tests passed"
+          assert d.get("failedTests") == 0, "Tests failed or result missing"
+          assert d.get("result") == "Passed", "Test run did not pass"
+          PY
 
       - name: Encrypt
         if: always()
@@ -219,7 +234,8 @@ jobs:
           OPENSSL="$(brew --prefix openssl@3)/bin/openssl"
           OUTDIR="$RUNNER_TEMP/tests-out"
           mkdir -p "$RUNNER_TEMP/tout"
-          (cd "$OUTDIR" && tar czf "$RUNNER_TEMP/ios-tests.tgz" tests.log summary.json tests.json counts.txt shots 2>/dev/null)
+          mkdir -p "$OUTDIR"
+          (cd "$OUTDIR" && tar czf "$RUNNER_TEMP/ios-tests.tgz" .)
           "$OPENSSL" enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:ARTIFACT_KEY \
             -in "$RUNNER_TEMP/ios-tests.tgz" -out "$RUNNER_TEMP/tout/ios-tests.tgz.enc"
           ls "$RUNNER_TEMP/tout" | sed 's/.*/artifact: &/'
