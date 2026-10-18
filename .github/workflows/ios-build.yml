@@ -194,6 +194,7 @@ jobs:
               -destination "id=$UDID" -derivedDataPath "$DD" \
               -resultBundlePath "$OUTDIR/dns-asan.xcresult" \
               -only-testing:EasyTierTests/DnsLogTests/testSingleOversizedEntryIsNotRetained \
+              -only-testing:EasyTierTests/DnsLogTests/testStoreDeallocatesSynchronouslyInsideTaskLocalScope \
               -test-iterations 5 -enableAddressSanitizer YES \
               CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
               DEVELOPMENT_TEAM="$TEAM_ID"
