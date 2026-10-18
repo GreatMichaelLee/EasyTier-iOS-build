@@ -187,6 +187,22 @@ jobs:
             xcrun xcresulttool get test-results summary --path "$OUTDIR/tests.xcresult" > "$OUTDIR/summary.json" 2>&1
             xcrun xcresulttool get test-results tests --path "$OUTDIR/tests.xcresult" > "$OUTDIR/tests.json" 2>&1
 
+            # Regression for the previous DNS invalid-free crash: retain the
+            # original test and repeat under ASan in a separate result bundle.
+            set +e
+            xcodebuild test -project EasyTier.xcodeproj -scheme "$SCHEME" \
+              -destination "id=$UDID" -derivedDataPath "$DD" \
+              -resultBundlePath "$OUTDIR/dns-asan.xcresult" \
+              -only-testing:EasyTierTests/DnsLogTests/testSingleOversizedEntryIsNotRetained \
+              -test-iterations 5 -enableAddressSanitizer YES \
+              CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+              DEVELOPMENT_TEAM="$TEAM_ID"
+            ASAN_RC=$?
+            set -e
+            echo "dns ASan regression rc=$ASAN_RC"
+            xcrun xcresulttool get test-results summary --path "$OUTDIR/dns-asan.xcresult" > "$OUTDIR/dns-asan-summary.json" 2>&1 || true
+            xcrun xcresulttool export diagnostics --path "$OUTDIR/tests.xcresult" --output-path "$OUTDIR/diagnostics" > "$OUTDIR/diagnostics-export.log" 2>&1 || true
+            [ "$ASAN_RC" -eq 0 ] || exit "$ASAN_RC"
             [ "$XCODE_TEST_RC" -eq 0 ] || exit "$XCODE_TEST_RC"
             APP="$DD/Build/Products/Debug-iphonesimulator/EasyTier.app"
             if [ -d "$APP" ]; then
