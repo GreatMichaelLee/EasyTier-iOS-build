@@ -25,6 +25,9 @@ jobs:
           tar xzf tests.tgz -C tests
           xcrun xcresulttool export diagnostics --path tests/tests.xcresult --output-path diagnostics > export.log 2>&1 || true
           cp export.log diagnostics/
+          xcrun xcresulttool export attachments --path tests/tests.xcresult --output-path diagnostics/attachments --only-failures > diagnostics/attachments-export.log 2>&1 || true
+          xcrun xcresulttool get test-results test-details --path tests/tests.xcresult --test-id 'ProfileDocumentTests/testQueuedSaveWritesSubmittedSnapshotWithoutConsumingLaterDraft()' > diagnostics/queued-save-details.json 2>&1 || true
+          xcrun xcresulttool get test-results activities --path tests/tests.xcresult --test-id 'ProfileDocumentTests/testQueuedSaveWritesSubmittedSnapshotWithoutConsumingLaterDraft()' > diagnostics/queued-save-activities.json 2>&1 || true
           tar czf diagnostics.tgz -C diagnostics .
           mkdir out
           openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:ARTIFACT_KEY -in diagnostics.tgz -out out/diagnostics.tgz.enc
