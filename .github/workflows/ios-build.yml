@@ -31,6 +31,11 @@ on:
         required: false
         default: "false"
 
+      core_startup_only:
+        description: "true to execute only the isolated Apple core startup test"
+        required: false
+        default: "false"
+
 permissions:
   contents: read
 
@@ -157,6 +162,7 @@ jobs:
       - name: Test
         env:
           CORE_SSH_KEY: ${{ secrets.CORE_SSH_KEY }}
+          CORE_STARTUP_ONLY: ${{ inputs.core_startup_only }}
         run: |
           set +e
           OUTDIR="$RUNNER_TEMP/tests-out"; mkdir -p "$OUTDIR/shots"
@@ -187,8 +193,12 @@ jobs:
             # bindgen (kcp-sys) cannot parse the Rust triple "aarch64-apple-ios-sim"; hand clang the real one
             export BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios_sim="--target=arm64-apple-ios16.0-simulator --sysroot=$(xcrun --sdk iphonesimulator --show-sdk-path)"
             DD="$RUNNER_TEMP/dd"
+            TEST_COMMAND=(xcodebuild test)
+            if [ "$CORE_STARTUP_ONLY" = true ]; then
+              TEST_COMMAND+=(-only-testing:EasyTierTests/CoreStartupTests/testIsolatedAppleCoreStartsAfterRejectedConfigurationAndStops)
+            fi
             set +e
-            xcodebuild test -project EasyTier.xcodeproj -scheme "$SCHEME" \
+            "${TEST_COMMAND[@]}" -project EasyTier.xcodeproj -scheme "$SCHEME" \
               -destination "id=$UDID" -derivedDataPath "$DD" \
               -resultBundlePath "$OUTDIR/tests.xcresult" \
               CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
@@ -208,6 +218,11 @@ jobs:
 
             xcrun xcresulttool get test-results summary --path "$OUTDIR/tests.xcresult" > "$OUTDIR/summary.json" 2>&1
             xcrun xcresulttool get test-results tests --path "$OUTDIR/tests.xcresult" > "$OUTDIR/tests.json" 2>&1
+
+            if [ "$CORE_STARTUP_ONLY" = true ]; then
+              xcrun xcresulttool export diagnostics --path "$OUTDIR/tests.xcresult" --output-path "$OUTDIR/diagnostics" > "$OUTDIR/diagnostics-export.log" 2>&1 || true
+              exit "$XCODE_TEST_RC"
+            fi
 
             # Regression for the previous DNS invalid-free crash: retain the
             # original test and repeat under ASan in a separate result bundle.
@@ -264,7 +279,7 @@ jobs:
           grep -q 'xcodebuild test rc=0' "$LOG" && echo "tests ok" || echo "tests failed (see the encrypted log)"
           ls "$OUTDIR/shots" | wc -l | sed 's/^ *//; s/$/ screenshots/'
           [ "$TEST_RC" -eq 0 ] || exit "$TEST_RC"
-          python3 - "$OUTDIR/summary.json" <<'PY'
+          python3 - "$OUTDIR/summary.json" "$CORE_STARTUP_ONLY" "$OUTDIR/tests.json" <<'PY'
           import json, sys
           with open(sys.argv[1]) as f:
               d = json.load(f)
@@ -272,6 +287,17 @@ jobs:
           assert d.get("passedTests", 0) > 0, "No tests passed"
           assert d.get("failedTests") == 0, "Tests failed or result missing"
           assert d.get("result") == "Passed", "Test run did not pass"
+          if sys.argv[2] == "true":
+              assert d.get("totalTestCount") == 1 and d.get("passedTests") == 1, "Expected exactly one core startup test"
+              expected = "CoreStartupTests/testIsolatedAppleCoreStartsAfterRejectedConfigurationAndStops"
+              def identifiers(value):
+                  if isinstance(value, dict):
+                      yield value.get("nodeIdentifier")
+                      for child in value.values(): yield from identifiers(child)
+                  elif isinstance(value, list):
+                      for child in value: yield from identifiers(child)
+              with open(sys.argv[3]) as file: tree=json.load(file)
+              assert any(item in (expected, expected+"()") for item in identifiers(tree)), "Core startup case was not executed"
           PY
 
       - name: Encrypt
