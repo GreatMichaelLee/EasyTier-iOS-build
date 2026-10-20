@@ -217,6 +217,7 @@ jobs:
               -resultBundlePath "$OUTDIR/dns-asan.xcresult" \
               -only-testing:EasyTierTests/DnsLogTests/testSingleOversizedEntryIsNotRetained \
               -only-testing:EasyTierTests/DnsLogTests/testStoreDeallocatesSynchronouslyInsideTaskLocalScope \
+              -only-testing:EasyTierTests/ProfileDocumentTests/testQueuedSaveWritesSubmittedSnapshotWithoutConsumingLaterDraft \
               -test-iterations 5 -enableAddressSanitizer YES \
               CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
               DEVELOPMENT_TEAM="$TEAM_ID"
@@ -246,6 +247,10 @@ jobs:
             fi
           ) > "$LOG" 2>&1
           TEST_RC=$?
+          mkdir -p "$OUTDIR/crashes"
+          for report in "$HOME"/Library/Logs/DiagnosticReports/EasyTier*.ips "$HOME"/Library/Logs/DiagnosticReports/EasyTier*.crash "$HOME"/Library/Logs/DiagnosticReports/Retired/EasyTier*.ips; do
+            [ ! -f "$report" ] || cp "$report" "$OUTDIR/crashes/"
+          done
           echo "test pipeline rc=$TEST_RC" >> "$LOG"
           python3 - "$OUTDIR/summary.json" > "$OUTDIR/counts.txt" 2>&1 <<'PY'
           import json,sys
