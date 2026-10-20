@@ -287,10 +287,31 @@ jobs:
           "$OPENSSL" enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:ARTIFACT_KEY \
             -in "$RUNNER_TEMP/ios-tests.tgz" -out "$RUNNER_TEMP/tout/ios-tests.tgz.enc"
           ls "$RUNNER_TEMP/tout" | sed 's/.*/artifact: &/'
+          # Small encrypted first-pass evidence avoids downloading both xcresult bundles.
+          python3 - "$OUTDIR" "$RUNNER_TEMP/ios-summary.tgz" <<'PY_SUMMARY'
+          from pathlib import Path
+          import sys,tarfile
+          root=Path(sys.argv[1])
+          with tarfile.open(sys.argv[2],"w:gz") as archive:
+              for name in ("tests.log","summary.json","tests.json","dns-asan-summary.json","counts.txt"):
+                  path=root/name
+                  if path.is_file(): archive.add(path,arcname=name)
+              if (root/"crashes").is_dir(): archive.add(root/"crashes",arcname="crashes")
+          PY_SUMMARY
+          mkdir -p "$RUNNER_TEMP/summary-out"
+          "$OPENSSL" enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:ARTIFACT_KEY \
+            -in "$RUNNER_TEMP/ios-summary.tgz" -out "$RUNNER_TEMP/summary-out/ios-summary.tgz.enc"
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: easytier-ios-tests-encrypted
           path: ${{ runner.temp }}/tout/
+          retention-days: 3
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: easytier-ios-summary-encrypted
+          path: ${{ runner.temp }}/summary-out/
           retention-days: 3
