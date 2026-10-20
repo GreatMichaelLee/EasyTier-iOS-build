@@ -26,6 +26,11 @@ on:
         required: false
         default: "false"
 
+      build_only:
+        description: "true to build an IPA without the full simulator test job"
+        required: false
+        default: "false"
+
 permissions:
   contents: read
 
@@ -132,6 +137,7 @@ jobs:
           retention-days: 3
 
   tests:
+    if: ${{ inputs.build_only != 'true' }}
     runs-on: macos-26
     timeout-minutes: 90
     steps:
