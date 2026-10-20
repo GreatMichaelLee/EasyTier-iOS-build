@@ -196,6 +196,16 @@ jobs:
             XCODE_TEST_RC=$?
             set -e
             echo "xcodebuild test rc=$XCODE_TEST_RC"
+            # A cancelled build cannot execute sanitizer tests. Preserve its
+            # diagnostics and avoid recompiling the same invalid Swift source.
+            if [ "$XCODE_TEST_RC" -ne 0 ] && grep -q 'Testing cancelled because the build failed.' "$LOG"; then
+              xcrun xcresulttool get test-results summary --path "$OUTDIR/tests.xcresult" > "$OUTDIR/summary.json" 2>&1 || true
+              xcrun xcresulttool get test-results tests --path "$OUTDIR/tests.xcresult" > "$OUTDIR/tests.json" 2>&1 || true
+              xcrun xcresulttool export diagnostics --path "$OUTDIR/tests.xcresult" --output-path "$OUTDIR/diagnostics" > "$OUTDIR/diagnostics-export.log" 2>&1 || true
+              echo "build failed before tests; sanitizer repetition skipped"
+              exit "$XCODE_TEST_RC"
+            fi
+
             xcrun xcresulttool get test-results summary --path "$OUTDIR/tests.xcresult" > "$OUTDIR/summary.json" 2>&1
             xcrun xcresulttool get test-results tests --path "$OUTDIR/tests.xcresult" > "$OUTDIR/tests.json" 2>&1
 
