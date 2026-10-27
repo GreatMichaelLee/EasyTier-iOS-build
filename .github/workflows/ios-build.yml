@@ -36,6 +36,11 @@ on:
         required: false
         default: "false"
 
+      basic_regression:
+        description: "true to run targeted log and core-startup regressions without sanitizer or UI suites"
+        required: false
+        default: "false"
+
 permissions:
   contents: read
 
@@ -163,6 +168,7 @@ jobs:
         env:
           CORE_SSH_KEY: ${{ secrets.CORE_SSH_KEY }}
           CORE_STARTUP_ONLY: ${{ inputs.core_startup_only }}
+          BASIC_REGRESSION: ${{ inputs.basic_regression }}
         run: |
           set +e
           OUTDIR="$RUNNER_TEMP/tests-out"; mkdir -p "$OUTDIR/shots"
@@ -196,6 +202,13 @@ jobs:
             TEST_COMMAND=(xcodebuild test)
             if [ "$CORE_STARTUP_ONLY" = true ]; then
               TEST_COMMAND+=(-only-testing:EasyTierTests/CoreStartupTests/testIsolatedAppleCoreStartsAfterRejectedConfigurationAndStops)
+            elif [ "$BASIC_REGRESSION" = true ]; then
+              TEST_COMMAND+=(-only-testing:EasyTierTests/SystemLogRecordTests
+                -only-testing:EasyTierTests/SystemLogTextViewTests
+                -only-testing:EasyTierTests/LogTailerCursorTests
+                -only-testing:EasyTierTests/LogByteStreamTests
+                -only-testing:EasyTierTests/BackgroundArchiveTests
+                -only-testing:EasyTierTests/CoreStartupTests/testIsolatedAppleCoreStartsAfterRejectedConfigurationAndStops)
             fi
             set +e
             "${TEST_COMMAND[@]}" -project EasyTier.xcodeproj -scheme "$SCHEME" \
@@ -219,7 +232,7 @@ jobs:
             xcrun xcresulttool get test-results summary --path "$OUTDIR/tests.xcresult" > "$OUTDIR/summary.json" 2>&1
             xcrun xcresulttool get test-results tests --path "$OUTDIR/tests.xcresult" > "$OUTDIR/tests.json" 2>&1
 
-            if [ "$CORE_STARTUP_ONLY" = true ]; then
+            if [ "$CORE_STARTUP_ONLY" = true ] || [ "$BASIC_REGRESSION" = true ]; then
               xcrun xcresulttool export diagnostics --path "$OUTDIR/tests.xcresult" --output-path "$OUTDIR/diagnostics" > "$OUTDIR/diagnostics-export.log" 2>&1 || true
               exit "$XCODE_TEST_RC"
             fi
