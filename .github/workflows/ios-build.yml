@@ -208,6 +208,7 @@ jobs:
                 -only-testing:EasyTierTests/LogTailerCursorTests
                 -only-testing:EasyTierTests/LogByteStreamTests
                 -only-testing:EasyTierTests/BackgroundArchiveTests
+                -only-testing:EasyTierTests/LogExportFlowTests
                 -only-testing:EasyTierTests/CoreStartupTests/testIsolatedAppleCoreStartsAfterRejectedConfigurationAndStops)
             fi
             set +e
