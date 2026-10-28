@@ -275,7 +275,7 @@ jobs:
               # This changes only the simulator app, never the release IPA.
               codesign --force --sign - --entitlements EasyTier/EasyTier.entitlements "$APP"
               codesign --display --entitlements :- "$APP" > "$OUTDIR/simulator-entitlements.plist"
-              plutil -extract com.apple.security.application-groups xml1 -o - "$OUTDIR/simulator-entitlements.plist"
+              python3 -c 'import plistlib,sys; assert plistlib.load(open(sys.argv[1],"rb"))["com.apple.security.application-groups"]' "$OUTDIR/simulator-entitlements.plist"
               xcrun simctl install "$UDID" "$APP"
               BID=app.turquoise1634.pearl6659
               for mode in light dark; do
