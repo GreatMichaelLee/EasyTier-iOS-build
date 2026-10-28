@@ -41,6 +41,15 @@ on:
         required: false
         default: "false"
 
+      dns_only:
+        description: "true to run only DNS packet regressions on iOS Simulator"
+        required: false
+        default: "false"
+      dns_core_ref:
+        description: "private core commit for DNS-only regressions"
+        required: false
+        default: ""
+
 permissions:
   contents: read
 
@@ -57,7 +66,7 @@ env:
 
 jobs:
   ipa:
-    if: ${{ inputs.tests_only != 'true' }}
+    if: ${{ inputs.tests_only != 'true' && inputs.dns_only != 'true' }}
     runs-on: macos-26
     timeout-minutes: 90
     steps:
@@ -147,7 +156,7 @@ jobs:
           retention-days: 3
 
   tests:
-    if: ${{ inputs.build_only != 'true' }}
+    if: ${{ inputs.build_only != 'true' && inputs.dns_only != 'true' }}
     runs-on: macos-26
     timeout-minutes: 90
     steps:
@@ -356,4 +365,61 @@ jobs:
         with:
           name: easytier-ios-summary-encrypted
           path: ${{ runner.temp }}/summary-out/
+          retention-days: 3
+
+  ios-dns:
+    if: ${{ inputs.dns_only == 'true' }}
+    runs-on: macos-26
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: GreatMichaelLee/Easytier-iOS-src
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+          path: harness
+      - uses: actions/checkout@v4
+        with:
+          repository: GreatMichaelLee/Easytier
+          ref: ${{ inputs.dns_core_ref }}
+          ssh-key: ${{ secrets.CORE_SSH_KEY }}
+          persist-credentials: false
+          path: core
+      - name: DNS only on iOS Simulator
+        run: |
+          set +e
+          (
+            set -euo pipefail
+            sudo xcode-select --switch /Applications/Xcode_26.6.app/Contents/Developer
+            rustup default 1.95
+            rustup target add aarch64-apple-ios-sim
+            command -v protoc >/dev/null 2>&1 || brew install protobuf
+            python3 harness/ci_scripts/dns-regression/run.py --core "$GITHUB_WORKSPACE/core" --out "$RUNNER_TEMP/dns" --target aarch64-apple-ios-sim --runner iossim
+          ) > "$RUNNER_TEMP/dns-run.log" 2>&1
+          DNS_RC=$?
+          echo "rc=$DNS_RC" >> "$RUNNER_TEMP/dns-run.log"
+          if [ "$DNS_RC" = 0 ]; then echo 'DNS tests passed'; else echo 'DNS tests failed; encrypted diagnostics retained'; fi
+          exit "$DNS_RC"
+      - name: Encrypt DNS results
+        if: always()
+        env:
+          ARTIFACT_KEY: ${{ secrets.ARTIFACT_KEY }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/dns" "$RUNNER_TEMP/encrypted"
+          cp "$RUNNER_TEMP/dns-run.log" "$RUNNER_TEMP/dns/run.log"
+          python3 - <<'PY'
+          import os,pathlib,tarfile
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])
+          with tarfile.open(root/'dns-result.tgz','w:gz') as archive:
+              for name in ['run.log','cargo.log','tests.log','summary.json']:
+                  p=root/'dns'/name
+                  if p.is_file():archive.add(p,arcname=name)
+          PY
+          "$(brew --prefix openssl@3)/bin/openssl" enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:ARTIFACT_KEY -in "$RUNNER_TEMP/dns-result.tgz" -out "$RUNNER_TEMP/encrypted/dns-result.tgz.enc"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: strict-dns-ios-simulator-encrypted
+          path: ${{ runner.temp }}/encrypted/
           retention-days: 3
