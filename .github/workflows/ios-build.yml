@@ -270,6 +270,12 @@ jobs:
             [ "$XCODE_TEST_RC" -eq 0 ] || exit "$XCODE_TEST_RC"
             APP="$DD/Build/Products/Debug-iphonesimulator/EasyTier.app"
             if [ -d "$APP" ]; then
+              # XCTest builds unsigned. Register the actual App Group entitlement
+              # before UI launches so the simulator can open the shared log folder.
+              # This changes only the simulator app, never the release IPA.
+              codesign --force --sign - --entitlements EasyTier/EasyTier.entitlements "$APP"
+              codesign --display --entitlements :- "$APP" > "$OUTDIR/simulator-entitlements.plist"
+              plutil -extract com.apple.security.application-groups xml1 -o - "$OUTDIR/simulator-entitlements.plist"
               xcrun simctl install "$UDID" "$APP"
               BID=app.turquoise1634.pearl6659
               for mode in light dark; do
